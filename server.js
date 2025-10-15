@@ -1,42 +1,48 @@
-// server.js
-import express from "express";
-import cors from "cors";
-import duckdb from "duckdb";
-import fs from "fs";
-import https from "https";
+// server.js (CommonJS)
+const express = require('express');
+const cors = require('cors');
+const duckdb = require('duckdb');
+const fs = require('fs');
+const https = require('https');
 
-// Configuración
 const app = express();
 app.use(cors());
 
-const PARQUET_URL = "https://pub-9487f99c65424e2a8ed71289fa945c19.r2.dev/censo.parquet";
-const LOCAL_FILE = "/tmp/censo.parquet";
+// URL pública de tu Parquet en Cloudflare R2 (pub-...r2.dev)
+const PARQUET_URL = 'https://pub-9487f99c65424e2a8ed71289fa945c19.r2.dev/censo.parquet';
+// En Render, /tmp es el lugar correcto para escribir archivos
+const LOCAL_FILE = '/tmp/censo.parquet';
 
-// Descargar el archivo Parquet desde Cloudflare si no existe localmente
+// Descarga el Parquet si no existe en /tmp
 async function ensureLocalFile() {
   if (fs.existsSync(LOCAL_FILE)) return;
-  console.log("Descargando archivo Parquet desde Cloudflare R2...");
-  const file = fs.createWriteStream(LOCAL_FILE);
+  console.log('Descargando Parquet desde R2...');
   await new Promise((resolve, reject) => {
-    https.get(PARQUET_URL, response => {
-      if (response.statusCode !== 200) return reject(new Error(`Error ${response.statusCode}`));
-      response.pipe(file);
-      file.on("finish", () => file.close(resolve));
-    }).on("error", reject);
+    const file = fs.createWriteStream(LOCAL_FILE);
+    https.get(PARQUET_URL, (res) => {
+      if (res.statusCode !== 200) {
+        return reject(new Error(`Descarga falló con status ${res.statusCode}`));
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+    }).on('error', reject);
   });
-  console.log("Archivo descargado y guardado localmente.");
+  console.log('Parquet descargado en /tmp.');
 }
 
-// Inicializar DuckDB
-const db = new duckdb.Database(":memory:");
+// DuckDB en memoria (no necesitamos archivo .db)
+const db = new duckdb.Database(':memory:');
 const conn = db.connect();
 
-// Sanitiza el parámetro identidad
-const onlyDigits = s => (s || "").replace(/[^\d]/g, "");
+// Sanitiza: solo dígitos
+const onlyDigits = (s) => (s || '').replace(/[^\d]/g, '');
 
-app.get("/buscar", async (req, res) => {
+// Healthcheck para Render
+app.get('/', (_req, res) => res.send('OK'));
+
+app.get('/buscar', async (req, res) => {
   try {
-    const identidad = onlyDigits(req.query.identidad || "");
+    const identidad = onlyDigits(req.query.identidad || '');
     if (!identidad || identidad.length < 6) {
       return res.status(400).json({ error: 'Parámetro "identidad" inválido' });
     }
@@ -57,7 +63,7 @@ app.get("/buscar", async (req, res) => {
 
     conn.all(sql, (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
-      res.json(rows?.[0] || null);
+      res.json(rows && rows[0] ? rows[0] : null);
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -65,5 +71,7 @@ app.get("/buscar", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ API del Censo lista en http://localhost:${PORT}`));
+app.listen(PORT, () =>
+  console.log(`✅ API del Censo lista en http://localhost:${PORT}`)
+);
 
