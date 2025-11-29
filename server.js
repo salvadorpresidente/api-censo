@@ -8,7 +8,7 @@ const https = require('https');
 const app = express();
 app.use(cors());
 
-// URL pública de tu Parquet en Cloudflare R2 (pub-...r2.dev)
+// URL pública de tu Parquet en Cloudflare R2
 const PARQUET_URL = 'https://pub-9487f99c65424e2a8ed71289fa945c19.r2.dev/censo.parquet';
 // En Render, /tmp es el lugar correcto para escribir archivos
 const LOCAL_FILE = '/tmp/censo.parquet';
@@ -66,6 +66,7 @@ app.get('/buscar', async (req, res) => {
       res.json(rows && rows[0] ? rows[0] : null);
     });
   } catch (e) {
+    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -74,4 +75,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`✅ API del Censo lista en http://localhost:${PORT}`)
 );
-
