@@ -99,6 +99,9 @@ const onlyDigits = (s) => (s || '').replace(/[^\d]/g, '');
 // Healthcheck para Render
 app.get('/', (_req, res) => res.send('OK'));
 
+// Healthcheck para Render
+app.get('/', (_req, res) => res.send('OK'));
+
 app.get('/buscar', async (req, res) => {
   try {
     const identidad = onlyDigits(req.query.identidad || '');
@@ -106,8 +109,7 @@ app.get('/buscar', async (req, res) => {
       return res.status(400).json({ error: 'Parámetro "identidad" inválido' });
     }
 
-    // Aseguramos que el parquet está descargado y la tabla censo inicializada
-    await ensureCensoInicializado();
+    await ensureLocalFile();
 
     const sql = `
       SELECT
@@ -116,17 +118,16 @@ app.get('/buscar', async (req, res) => {
         PRIMER_APELLIDO, SEGUNDO_APELLIDO,
         NOMBRE_DEPARTAMENTO, NOMBRE_MUNICIPIO, NOMBRE_CENTRO,
         NUMERO_JRV, NUMERO_LINEA
-      FROM censo
-      WHERE NUMERO_IDENTIDAD = ?
+      FROM read_parquet('${LOCAL_FILE}')
+      WHERE NUMERO_IDENTIDAD = '${identidad}'
       LIMIT 1;
     `;
 
-    conn.all(sql, [identidad], (err, rows) => {
+    conn.all(sql, (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json(rows && rows[0] ? rows[0] : null);
     });
   } catch (e) {
-    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
