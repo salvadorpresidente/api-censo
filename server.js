@@ -33,6 +33,65 @@ async function ensureLocalFile() {
 // DuckDB en memoria (no necesitamos archivo .db)
 const db = new duckdb.Database(':memory:');
 const conn = db.connect();
+// Estado de inicialización de la tabla censo
+let censoInicializado = false;
+let censoInicializando = null;
+
+async function ensureCensoInicializado() {
+  // Si ya está inicializado, no hacemos nada
+  if (censoInicializado) return;
+
+  // Si ya hay una inicialización en curso, esperamos esa misma
+  if (censoInicializando) {
+    await censoInicializando;
+    return;
+  }
+
+  // Primera vez: descargamos el parquet y creamos la tabla en memoria
+  censoInicializando = (async () => {
+    console.time('init-censo');
+
+    // 1) Asegurar que el archivo parquet existe en /tmp
+    await ensureLocalFile();
+
+    // 2) Crear tabla censo en memoria a partir del parquet
+    await new Promise((resolve, reject) => {
+      const sql = `
+        CREATE TABLE censo AS
+        SELECT
+          NUMERO_IDENTIDAD,
+          PRIMER_NOMBRE, SEGUNDO_NOMBRE,
+          PRIMER_APELLIDO, SEGUNDO_APELLIDO,
+          NOMBRE_DEPARTAMENTO, NOMBRE_MUNICIPIO, NOMBRE_CENTRO,
+          NUMERO_JRV, NUMERO_LINEA
+        FROM read_parquet('${LOCAL_FILE}');
+      `;
+      conn.run(sql, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    // 3) Crear índice por NUMERO_IDENTIDAD para acelerar las búsquedas
+    await new Promise((resolve, reject) => {
+      const idxSql = `
+        CREATE INDEX IF NOT EXISTS idx_censo_identidad
+        ON censo (NUMERO_IDENTIDAD);
+      `;
+      conn.run(idxSql, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    censoInicializado = true;
+    console.timeEnd('init-censo');
+    console.log('✅ Censo inicializado en memoria');
+  })();
+
+  // Esperamos a que termine la inicialización
+  await censoInicializando;
+}
 
 // Sanitiza: solo dígitos
 const onlyDigits = (s) => (s || '').replace(/[^\d]/g, '');
@@ -47,7 +106,8 @@ app.get('/buscar', async (req, res) => {
       return res.status(400).json({ error: 'Parámetro "identidad" inválido' });
     }
 
-    await ensureLocalFile();
+    // Aseguramos que el parquet está descargado y la tabla censo inicializada
+    await ensureCensoInicializado();
 
     const sql = `
       SELECT
@@ -56,16 +116,17 @@ app.get('/buscar', async (req, res) => {
         PRIMER_APELLIDO, SEGUNDO_APELLIDO,
         NOMBRE_DEPARTAMENTO, NOMBRE_MUNICIPIO, NOMBRE_CENTRO,
         NUMERO_JRV, NUMERO_LINEA
-      FROM read_parquet('${LOCAL_FILE}')
-      WHERE NUMERO_IDENTIDAD = '${identidad}'
+      FROM censo
+      WHERE NUMERO_IDENTIDAD = ?
       LIMIT 1;
     `;
 
-    conn.all(sql, (err, rows) => {
+    conn.all(sql, [identidad], (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json(rows && rows[0] ? rows[0] : null);
     });
   } catch (e) {
+    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
