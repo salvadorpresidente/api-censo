@@ -30,12 +30,73 @@ async function ensureLocalFile() {
   console.log('Parquet descargado en /tmp.');
 }
 
-// DuckDB en memoria (no necesitamos archivo .db)
+// DuckDB en memoria
 const db = new duckdb.Database(':memory:');
 const conn = db.connect();
 
 // Sanitiza: solo dígitos
 const onlyDigits = (s) => (s || '').replace(/[^\d]/g, '');
+
+// Estado de inicialización del censo en memoria
+let censoInicializado = false;
+let censoInicializando = null;
+
+async function ensureCensoInicializado() {
+  // Si ya está, no hacemos nada
+  if (censoInicializado) return;
+
+  // Si ya hay una inicialización en curso, esperamos esa misma
+  if (censoInicializando) {
+    await censoInicializando;
+    return;
+  }
+
+  // Primera vez: descargamos parquet y creamos la tabla en memoria
+  censoInicializando = (async () => {
+    console.time('init-censo');
+
+    // 1) Asegurar que existe el parquet local
+    await ensureLocalFile();
+
+    // 2) Crear tabla censo en memoria a partir del parquet
+    await new Promise((resolve, reject) => {
+      const sql = `
+        CREATE TABLE censo AS
+        SELECT
+          NUMERO_IDENTIDAD,
+          PRIMER_NOMBRE, SEGUNDO_NOMBRE,
+          PRIMER_APELLIDO, SEGUNDO_APELLIDO,
+          NOMBRE_DEPARTAMENTO, NOMBRE_MUNICIPIO, NOMBRE_CENTRO,
+          NUMERO_JRV, NUMERO_LINEA
+        FROM read_parquet('${LOCAL_FILE}');
+      `;
+      console.log('Creando tabla censo en memoria...');
+      conn.run(sql, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    // 3) Crear índice por NUMERO_IDENTIDAD para acelerar búsquedas
+    await new Promise((resolve, reject) => {
+      const idxSql = `
+        CREATE INDEX IF NOT EXISTS idx_censo_identidad
+        ON censo (NUMERO_IDENTIDAD);
+      `;
+      console.log('Creando índice idx_censo_identidad...');
+      conn.run(idxSql, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+
+    censoInicializado = true;
+    console.timeEnd('init-censo');
+    console.log('✅ Censo inicializado en memoria');
+  })();
+
+  await censoInicializando;
+}
 
 // Healthcheck para Render
 app.get('/', (_req, res) => res.send('OK'));
@@ -47,7 +108,8 @@ app.get('/buscar', async (req, res) => {
       return res.status(400).json({ error: 'Parámetro "identidad" inválido' });
     }
 
-    await ensureLocalFile();
+    // Asegura que el censo está cargado en memoria
+    await ensureCensoInicializado();
 
     const sql = `
       SELECT
@@ -56,17 +118,20 @@ app.get('/buscar', async (req, res) => {
         PRIMER_APELLIDO, SEGUNDO_APELLIDO,
         NOMBRE_DEPARTAMENTO, NOMBRE_MUNICIPIO, NOMBRE_CENTRO,
         NUMERO_JRV, NUMERO_LINEA
-      FROM read_parquet('${LOCAL_FILE}')
-      WHERE NUMERO_IDENTIDAD = '${identidad}'
+      FROM censo
+      WHERE NUMERO_IDENTIDAD = ?
       LIMIT 1;
     `;
 
-    conn.all(sql, (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
+    conn.all(sql, [identidad], (err, rows) => {
+      if (err) {
+        console.error('Error en consulta DuckDB:', err);
+        return res.status(500).json({ error: err.message });
+      }
       res.json(rows && rows[0] ? rows[0] : null);
     });
   } catch (e) {
-    console.error(e);
+    console.error('Error en /buscar:', e);
     res.status(500).json({ error: e.message });
   }
 });
